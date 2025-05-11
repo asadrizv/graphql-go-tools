@@ -20,6 +20,7 @@ func NewRecursionCalculator(maxDepth int) RecursionCalculator {
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxDepth
 	}
+
 	return &defaultRecursionCalculator{maxDepth: maxDepth}
 }
 

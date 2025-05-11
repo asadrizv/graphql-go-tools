@@ -68,17 +68,6 @@ type visitor struct {
 	errHit     bool
 }
 
-func named(doc *ast.Document, ref int) int {
-	// We need this bit to get to the true named type, because in certain cases the name type is deeply embedded
-	// into a NOT-NULL or LIST type
-	// For eg: Employee!, [Employee], [[Employee!]!]!).
-	// The outer wrappers have kinds NON_NULL or LIST; only the innermost node has kind NAMED.
-	for doc.Types[ref].TypeKind != ast.TypeKindNamed {
-		ref = doc.Types[ref].OfType
-	}
-	return ref
-}
-
 func (v *visitor) EnterSelectionSet(ref int) {
 	if len(v.Ancestors) == 0 || v.Ancestors[len(v.Ancestors)-1].Kind != ast.NodeKindField {
 		return
@@ -150,4 +139,15 @@ func (v *visitor) EnterField(ref int) {
 		top := &v.frameStack[len(v.frameStack)-1]
 		top.bumped = append(top.bumped, typeName)
 	}
+}
+
+func named(doc *ast.Document, ref int) int {
+	// We need this bit to get to the true named type, because in certain cases the name type is deeply embedded
+	// into a NOT-NULL or LIST type
+	// For eg: Employee!, [Employee], [[Employee!]!]!).
+	// The outer wrappers have kinds NON_NULL or LIST; only the innermost node has kind NAMED.
+	for doc.Types[ref].TypeKind != ast.TypeKindNamed {
+		ref = doc.Types[ref].OfType
+	}
+	return ref
 }
