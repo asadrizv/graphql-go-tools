@@ -10,6 +10,8 @@ import (
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/operationreport"
 )
 
+/* ── helper ─────────────────────────────────────────────────────────── */
+
 func runRecursion(
 	t *testing.T,
 	sdl, query string,
@@ -19,13 +21,12 @@ func runRecursion(
 	schema, _ := astparser.ParseGraphqlDocumentString(sdl)
 	op, _ := astparser.ParseGraphqlDocumentString(query)
 
-	// normalise once so that spreads / inline fragments are flattened
-	normReport := operationreport.Report{}
-	astnormalization.NormalizeOperation(&op, &schema, &normReport)
-	require.False(t, normReport.HasErrors(), "invalid test documents: %v", normReport)
+	// flatten spreads / inline fragments once
+	norm := operationreport.Report{}
+	astnormalization.NormalizeOperation(&op, &schema, &norm)
+	require.False(t, norm.HasErrors(), "bad test docs: %v", norm)
 
-	calc := NewRecursionCalculator(maxDepth)
-	res, err := calc.Calculate(&op, &schema)
+	res, err := NewRecursionCalculator(maxDepth).Calculate(&op, &schema)
 	require.NoError(t, err)
 
 	if wantErr {
@@ -35,32 +36,43 @@ func runRecursion(
 	}
 }
 
-func TestRecursionCalculator(t *testing.T) {
-	const scalars = "scalar ID\nscalar String\n"
+/* ── base scalars used by every SDL ─────────────────────────────────── */
 
-	employeeSDL := scalars + `
+const scalars = "scalar ID\nscalar String\n"
+
+/* ── SDLs exactly mirroring the spec examples ───────────────────────── */
+
+const employeeSDL = scalars + `
 type Query   { employee(id: ID!): Employee }
 type Employee{ id: ID manager: Employee }
 schema { query: Query }`
 
-	bookSDL := scalars + `
+const bookSDL = scalars + `
 type Query  { book(id: ID!): Book }
 type Book   { id: ID author: Author }
 type Author { id: ID works: [Book] }
 schema { query: Query }`
 
-	// direct chain depth-3
-	direct := `
+const userSDL = scalars + `
+type Query { user(id: ID!): User }
+type User  { id: ID name: String posts: [Post] friends: [User] }
+type Post  { id: ID title: String author: User }
+schema { query: Query }`
+
+/* ── queries from the assignment & your explanation ────────────────── */
+
+// direct recursion Employee.manager.manager
+const directRecursion = `
 {
-  employee(id:"1"){
+  employee(id:"123"){
     manager{
       manager{ id }
     }
   }
 }`
 
-	// indirect Book–Author loop depth-3
-	indirect := `
+// indirect loop Book → Author → Book
+const indirectRecursion = `
 {
   book(id:"1"){
     author{
@@ -73,23 +85,62 @@ schema { query: Query }`
   }
 }`
 
-	t.Run("scalar only – ok", func(t *testing.T) {
-		runRecursion(t, employeeSDL, `{ employee(id:"1"){ id } }`, 1, false)
+// cycle only: User.posts → Post.author(User)  (no pair repeats)
+const cyclicPath = `
+{
+  user(id:"1"){
+    posts{
+      author{ id }
+    }
+  }
+}`
+
+// true recursion: User.friends.friends  …
+const friendsRecursion = `
+{
+  user(id:"1"){
+    friends{
+		name
+      friends{
+        name
+      }
+    }
+  }
+}`
+
+/* ── tests ──────────────────────────────────────────────────────────── */
+
+func TestRecursionCalculator(t *testing.T) {
+	/* employee examples ------------------------------------------------ */
+
+	runRecursion(t, employeeSDL, `{ employee(id:"1"){ id } }`, 1, false) // scalar
+
+	t.Run("Employee.manager over limit – err", func(t *testing.T) {
+		runRecursion(t, employeeSDL, directRecursion, 1, true)
+	})
+	t.Run("Employee.manager within limit – ok", func(t *testing.T) {
+		runRecursion(t, employeeSDL, directRecursion, 3, false)
 	})
 
-	t.Run("direct recursion over limit – err", func(t *testing.T) {
-		runRecursion(t, employeeSDL, direct, 1, true)
+	/* book / author loop ---------------------------------------------- */
+
+	t.Run("Book loop within limit – ok", func(t *testing.T) {
+		runRecursion(t, bookSDL, indirectRecursion, 2, false) // pair repeats twice, limit 2
+	})
+	t.Run("Book loop over limit – err", func(t *testing.T) {
+		runRecursion(t, bookSDL, indirectRecursion, 1, true)
 	})
 
-	t.Run("direct recursion within limit – ok", func(t *testing.T) {
-		runRecursion(t, employeeSDL, direct, 3, false)
+	/* cyclic vs. recursive user examples ------------------------------ */
+
+	t.Run("cyclic User-Post path – ok", func(t *testing.T) {
+		runRecursion(t, userSDL, cyclicPath, 1, false) // no pair repeats
 	})
 
-	t.Run("indirect recursion within limit – ok", func(t *testing.T) {
-		runRecursion(t, bookSDL, indirect, 3, false)
+	t.Run("User.friends recursion over limit – err", func(t *testing.T) {
+		runRecursion(t, userSDL, friendsRecursion, 1, true) // pair User.friends repeats
 	})
-
-	t.Run("indirect recursion over limit – err", func(t *testing.T) {
-		runRecursion(t, bookSDL, indirect, 2, true)
+	t.Run("User.friends recursion within limit – ok", func(t *testing.T) {
+		runRecursion(t, userSDL, friendsRecursion, 2, false)
 	})
 }

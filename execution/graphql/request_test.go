@@ -224,12 +224,6 @@ func parseSchema(tb testing.TB, sdl string) *Schema {
 	return &Schema{document: doc}
 }
 
-const employeeSDL = `
-scalar ID
-type Query   { employee(id: ID!): Employee }
-type Employee{ id: ID manager: Employee }
-schema { query: Query }`
-
 func TestRequest_IsIntrospectionQuery(t *testing.T) {
 	run := func(queryPayload string, expectedIsIntrospection bool) func(t *testing.T) {
 		return func(t *testing.T) {
