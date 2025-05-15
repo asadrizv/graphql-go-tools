@@ -50,7 +50,8 @@ schema { query: Query }`
 const bookSDL = scalars + `
 type Query  { book(id: ID!): Book }
 type Book   { id: ID author: Author }
-type Author { id: ID works: [Book] }
+type Author { id: ID works: [Book] coauthor: CoAuthor }
+type CoAuthor { id: ID works: [Book] }
 schema { query: Query }`
 
 const userSDL = scalars + `
@@ -90,7 +91,10 @@ const cyclicPath = `
 {
   user(id:"1"){
     posts{
-      author{ id }
+      author{
+      id
+      coauthor{ id }
+     }
     }
   }
 }`

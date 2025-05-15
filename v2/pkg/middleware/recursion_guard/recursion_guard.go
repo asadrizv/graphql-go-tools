@@ -1,4 +1,8 @@
 // Package recursion_guard detects excessive recursion depth in GraphQL queries.
+//
+// The guard counts repetitions of the **same field on the same parent type**
+// along a single ancestry chain.  Cycles that revisit the same return type via
+// a different field are allowed.
 package recursion_guard
 
 import (
@@ -12,10 +16,12 @@ import (
 	"github.com/wundergraph/graphql-go-tools/v2/pkg/operationreport"
 )
 
+// RecursionGuard enforces a max repeat‑depth for each (parentType.field) pair.
 type RecursionGuard struct{ MaxDepth int }
 
 func NewRecursionGuard(maxDepth int) *RecursionGuard { return &RecursionGuard{maxDepth} }
 
+// public helper (used by Cosmo router)
 func ValidateRecursion(maxDepth int, op, schema *ast.Document, rep *operationreport.Report) graphql.Errors {
 	if maxDepth <= 0 {
 		return graphql.RequestErrors{{Message: "Recursion guard max depth must be greater than 0"}}
@@ -45,7 +51,7 @@ func (g *RecursionGuard) Do(op, schema *ast.Document, rep *operationreport.Repor
 
 type frame struct {
 	startPath int
-	bumped    []string // (type.field) pairs bumped inside this set
+	bumped    []string
 }
 
 type visitor struct {
@@ -54,10 +60,34 @@ type visitor struct {
 	report     *operationreport.Report
 	maxDepth   int
 
-	pairCount  map[string]int // key = "Type.field"
+	pairCount  map[string]int
 	path       []string
 	frameStack []frame
 	errHit     bool
+}
+
+// build key "ParentType.field"
+func (v *visitor) pairKey(ref int) (string, bool) {
+	// v.EnclosingTypeDefinition is an *ast.Node* (not a func).
+	parentNode := v.EnclosingTypeDefinition
+
+	// 0‑value means "none" (root selection / introspection).
+	if parentNode.Kind == 0 {
+		return "", false
+	}
+
+	var parentName string
+	switch parentNode.Kind {
+	case ast.NodeKindObjectTypeDefinition:
+		parentName = v.schema.ObjectTypeDefinitionNameString(parentNode.Ref)
+	case ast.NodeKindInterfaceTypeDefinition:
+		parentName = v.schema.InterfaceTypeDefinitionNameString(parentNode.Ref)
+	default:
+		return "", false // scalars, unions, etc.
+	}
+
+	field := v.op.FieldNameString(ref)
+	return parentName + "." + field, true
 }
 
 func named(doc *ast.Document, t int) int {
@@ -65,11 +95,6 @@ func named(doc *ast.Document, t int) int {
 		t = doc.Types[t].OfType
 	}
 	return t
-}
-
-func (v *visitor) newPair(ref int, typeName string) string {
-	fieldName := v.op.FieldNameString(ref)
-	return typeName + "." + fieldName // e.g. "User.friends"
 }
 
 func (v *visitor) EnterSelectionSet(ref int) {
@@ -80,8 +105,7 @@ func (v *visitor) EnterSelectionSet(ref int) {
 }
 
 func (v *visitor) LeaveSelectionSet(ref int) {
-	if len(v.frameStack) == 0 ||
-		len(v.Ancestors) == 0 ||
+	if len(v.frameStack) == 0 || len(v.Ancestors) == 0 ||
 		v.Ancestors[len(v.Ancestors)-1].Kind != ast.NodeKindField {
 		return
 	}
@@ -106,7 +130,9 @@ func (v *visitor) LeaveSelectionSet(ref int) {
 		}
 	}
 	v.frameStack = v.frameStack[:len(v.frameStack)-1]
-	v.path = v.path[:fr.startPath]
+	if fr.startPath < len(v.path) {
+		v.path = v.path[:fr.startPath]
+	}
 }
 
 func (v *visitor) EnterField(ref int) {
@@ -121,15 +147,16 @@ func (v *visitor) EnterField(ref int) {
 		return
 	}
 	tn := v.schema.TypeNameString(named(v.schema, v.schema.FieldDefinitionType(def)))
-
-	kindNode, exists := v.schema.Index.FirstNodeByNameStr(tn)
-	if !exists ||
-		(kindNode.Kind != ast.NodeKindObjectTypeDefinition &&
-			kindNode.Kind != ast.NodeKindInterfaceTypeDefinition) {
-		return // scalar / enum / union
+	node, exists := v.schema.Index.FirstNodeByNameStr(tn)
+	if !exists || (node.Kind != ast.NodeKindObjectTypeDefinition && node.Kind != ast.NodeKindInterfaceTypeDefinition) {
+		return
 	}
 
-	pair := v.newPair(ref, tn)
+	pair, ok := v.pairKey(ref)
+	if !ok {
+		return
+	}
+
 	v.pairCount[pair]++
 
 	if len(v.frameStack) > 0 {
